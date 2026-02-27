@@ -8,31 +8,32 @@
 </head>
 <body>
   <div class="bg" id="bg"></div>
-  <div class="overlay"></div>
+  <div class="bg-overlay"></div>
 
-  <main class="wrap">
+  <main class="page">
     <div class="yin">☯</div>
 
-    <section class="card">
+    <section class="profile-card">
       <img id="avatar" class="avatar" src="" alt="Avatar" />
+
       <h1 id="displayName">Carregando...</h1>
-      <p id="username" class="username">@...</p>
+      <p id="username" class="username">@carregando</p>
 
       <div id="links" class="links"></div>
 
-      <hr />
+      <div class="divider"></div>
 
-      <div class="info-box">
-        <div class="info-title">Perfil Discord</div>
-        <div class="progress-line"><span id="progress1"></span></div>
+      <div class="status-box">
+        <div class="status-title">Perfil sincronizado com Discord</div>
+        <div class="bar"><span class="bar-fill blue"></span></div>
       </div>
 
-      <div class="info-box">
-        <div class="info-title">Atualização automática ativa</div>
-        <div class="progress-line cyan"><span id="progress2"></span></div>
+      <div class="status-box">
+        <div class="status-title">Atualização automática ativa</div>
+        <div class="bar"><span class="bar-fill cyan"></span></div>
       </div>
 
-      <p class="updated" id="updatedAt">Atualizando...</p>
+      <p id="updatedAt" class="updatedAt">Atualizando...</p>
     </section>
   </main>
 
