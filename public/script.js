@@ -10,7 +10,7 @@ function renderLinks(links = []) {
 
   for (const link of links) {
     const a = document.createElement('a');
-    a.className = 'link-btn';
+    a.className = 'link';
     a.href = link.url;
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
@@ -28,12 +28,12 @@ async function loadProfile() {
     avatarEl.src = data.avatarUrl;
     avatarEl.alt = data.username || 'Avatar';
 
-    displayNameEl.textContent = data.global_name || data.username || 'Perfil';
-    usernameEl.textContent = `@${data.username || 'user'}`;
+    displayNameEl.textContent = data.globalName || data.username || 'Perfil';
+    usernameEl.textContent = `@${data.username || 'usuario'}`;
 
     if (data.bannerUrl) {
       bgEl.style.backgroundImage = `
-        linear-gradient(rgba(0,0,0,.45), rgba(0,0,0,.65)),
+        linear-gradient(rgba(0,0,0,.45), rgba(0,0,0,.68)),
         url('${data.bannerUrl}')
       `;
       bgEl.style.backgroundSize = 'cover';
@@ -42,16 +42,15 @@ async function loadProfile() {
 
     renderLinks(data.links || []);
 
-    const now = new Date();
-    updatedAtEl.textContent = `Última atualização: ${now.toLocaleTimeString('pt-BR')}`;
-  } catch (err) {
-    console.error(err);
+    updatedAtEl.textContent = `Última atualização: ${new Date().toLocaleTimeString('pt-BR')}`;
+  } catch (error) {
+    console.error(error);
     updatedAtEl.textContent = 'Erro ao atualizar perfil';
   }
 }
 
-// primeira carga
+// Carrega ao abrir
 loadProfile();
 
-// atualização automática (a cada 30s)
-setInterval(loadProfile, 30_000);
+// Atualiza automaticamente a cada 30s
+setInterval(loadProfile, 30000);
