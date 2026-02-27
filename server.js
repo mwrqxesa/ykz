@@ -4,29 +4,29 @@ const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const DISCORD_BOT_TOKEN = process.env.BOT_TOKEN; // token do seu bot
-const TARGET_USER_ID = process.env.TARGET_USER_ID || '826501596702965850'; // seu ID
+const DISCORD_BOT_TOKEN = process.env.BOT_TOKEN;
+const TARGET_USER_ID = process.env.TARGET_USER_ID || '826501596702965850';
 
 app.use(express.static('public'));
 
 function getAvatarUrl(user) {
-  if (!user?.avatar) return `https://cdn.discordapp.com/embed/avatars/${(Number(user.discriminator || 0) % 5)}.png`;
-  const isAnimated = user.avatar.startsWith('a_');
-  const ext = isAnimated ? 'gif' : 'png';
+  if (!user?.avatar) {
+    return `https://cdn.discordapp.com/embed/avatars/${Math.floor(Math.random() * 5)}.png`;
+  }
+  const ext = user.avatar.startsWith('a_') ? 'gif' : 'png';
   return `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.${ext}?size=1024`;
 }
 
 function getBannerUrl(user) {
   if (!user?.banner) return null;
-  const isAnimated = user.banner.startsWith('a_');
-  const ext = isAnimated ? 'gif' : 'png';
+  const ext = user.banner.startsWith('a_') ? 'gif' : 'png';
   return `https://cdn.discordapp.com/banners/${user.id}/${user.banner}.${ext}?size=2048`;
 }
 
-app.get('/api/profile', async (req, res) => {
+app.get('/api/profile', async (_req, res) => {
   try {
     if (!DISCORD_BOT_TOKEN) {
-      return res.status(500).json({ error: 'BOT_TOKEN não configurado no .env' });
+      return res.status(500).json({ error: 'BOT_TOKEN não configurado.' });
     }
 
     const response = await fetch(`https://discord.com/api/v10/users/${TARGET_USER_ID}`, {
@@ -46,28 +46,39 @@ app.get('/api/profile', async (req, res) => {
 
     const user = await response.json();
 
-    const payload = {
+    res.json({
       id: user.id,
       username: user.username,
-      global_name: user.global_name || null,
+      globalName: user.global_name || null,
       avatarUrl: getAvatarUrl(user),
       bannerUrl: getBannerUrl(user),
-      accent_color: user.accent_color || null,
-      // personalize seus links aqui
-      links: [
-        { label: 'Discord', icon: '💬', url: 'https://discord.com/users/826501596702965850' },
-        { label: 'Instagram', icon: '📸', url: 'https://instagram.com/' },
-        { label: 'GitHub', icon: '💻', url: 'https://github.com/' }
-      ]
-    };
+      accentColor: user.accent_color || null,
 
-    res.json(payload);
-  } catch (err) {
-    console.error('Erro /api/profile:', err);
-    res.status(500).json({ error: 'Erro interno ao buscar perfil' });
+      // 👇 edite seus links aqui
+      links: [
+        {
+          label: 'Discord',
+          icon: '💬',
+          url: `https://discord.com/users/${user.id}`
+        },
+        {
+          label: 'Instagram',
+          icon: '📸',
+          url: 'https://instagram.com/'
+        },
+        {
+          label: 'GitHub',
+          icon: '💻',
+          url: 'https://github.com/'
+        }
+      ]
+    });
+  } catch (error) {
+    console.error('Erro /api/profile:', error);
+    res.status(500).json({ error: 'Erro interno ao buscar perfil.' });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`✅ Site rodando em http://localhost:${PORT}`);
+  console.log(`✅ Site rodando na porta ${PORT}`);
 });
