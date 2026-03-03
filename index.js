@@ -20,39 +20,46 @@ if (!process.env.DISCORD_TOKEN) {
 
 const client = new Client({
   intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.Guilds // suficiente para slash commands
   ],
   partials: [Partials.Channel]
 });
 
 client.commands = new Collection();
 
+// =====================
 // Carregar comandos
+// =====================
 try {
   const commandsPath = path.join(__dirname, 'commands');
 
   if (!fs.existsSync(commandsPath)) {
-    console.warn('⚠️ Pasta commands não encontrada.');
+    console.warn('⚠️ Pasta "commands" não encontrada.');
   } else {
     const folders = fs.readdirSync(commandsPath);
     console.log('📂 Pastas de comandos:', folders);
 
     for (const folder of folders) {
       const folderPath = path.join(commandsPath, folder);
+
       if (!fs.statSync(folderPath).isDirectory()) continue;
 
       const commandFiles = fs.readdirSync(folderPath).filter(file => file.endsWith('.js'));
+      console.log(`📁 ${folder}:`, commandFiles);
 
       for (const file of commandFiles) {
         const filePath = path.join(folderPath, file);
-        const command = require(filePath);
 
-        if (command.data && command.execute) {
-          client.commands.set(command.data.name, command);
-        } else {
-          console.warn(`⚠️ Comando inválido (sem data/execute): ${filePath}`);
+        try {
+          const command = require(filePath);
+
+          if (command.data && command.execute) {
+            client.commands.set(command.data.name, command);
+          } else {
+            console.warn(`⚠️ Comando inválido (sem data/execute): ${filePath}`);
+          }
+        } catch (cmdErr) {
+          console.error(`❌ Erro ao carregar comando ${filePath}:`, cmdErr);
         }
       }
     }
@@ -63,6 +70,9 @@ try {
   console.error('❌ Erro ao carregar comandos:', err);
 }
 
+// =====================
+// Bot pronto
+// =====================
 client.once(Events.ClientReady, c => {
   console.log(`✅ Zangwdo online como ${c.user.tag}`);
 
@@ -72,18 +82,30 @@ client.once(Events.ClientReady, c => {
   });
 });
 
+// =====================
+// Slash Commands
+// =====================
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   const command = client.commands.get(interaction.commandName);
-  if (!command) return;
+
+  if (!command) {
+    return interaction.reply({
+      content: '⚠️ Esse comando não foi encontrado.',
+      ephemeral: true
+    }).catch(() => {});
+  }
 
   try {
     await command.execute(interaction, client);
   } catch (error) {
     console.error(`❌ Erro no comando /${interaction.commandName}:`, error);
 
-    const msg = { content: '❌ O Zangwdo tropeçou nesse comando.', ephemeral: true };
+    const msg = {
+      content: '❌ O Zangwdo tropeçou nesse comando.',
+      ephemeral: true
+    };
 
     if (interaction.replied || interaction.deferred) {
       await interaction.followUp(msg).catch(() => {});
@@ -93,6 +115,20 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 });
 
+// =====================
+// Tratamento de erros gerais
+// =====================
+process.on('unhandledRejection', (reason) => {
+  console.error('❌ Unhandled Rejection:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+});
+
+// =====================
+// Login
+// =====================
 client.login(process.env.DISCORD_TOKEN)
   .then(() => console.log('🔐 Login enviado ao Discord...'))
   .catch(err => {
