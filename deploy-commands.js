@@ -1,55 +1,103 @@
+// deploy-commands.js
 require('dotenv').config();
-const fs = require('fs');
-const path = require('path');
+
+const fs = require('node:fs');
+const path = require('node:path');
 const { REST, Routes } = require('discord.js');
 
+const TOKEN = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
+const GUILD_ID = process.env.GUILD_ID;
+
+if (!TOKEN) {
+  console.error('❌ DISCORD_TOKEN ou BOT_TOKEN não encontrado nas variables (.env/Railway).');
+  process.exit(1);
+}
+if (!CLIENT_ID) {
+  console.error('❌ CLIENT_ID não encontrado nas variables (.env/Railway).');
+  process.exit(1);
+}
+if (!GUILD_ID) {
+  console.error('❌ GUILD_ID não encontrado nas variables (.env/Railway).');
+  process.exit(1);
+}
+
 const commands = [];
-const commandsPath = path.join(__dirname, 'commands');
+const commandsRoot = path.join(__dirname, 'commands');
+
+/**
+ * Coleta comandos recursivamente em /commands
+ * Espera export: { data, execute }
+ */
+function collectCommands(dirPath) {
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const fullPath = path.join(dirPath, entry.name);
+
+    if (entry.isDirectory()) {
+      collectCommands(fullPath);
+      continue;
+    }
+
+    if (!entry.isFile() || !entry.name.endsWith('.js')) continue;
+
+    try {
+      delete require.cache[require.resolve(fullPath)];
+      const command = require(fullPath);
+
+      if (!command?.data || !command?.execute) {
+        console.warn(`⚠️ Comando inválido (sem data/execute): ${fullPath}`);
+        continue;
+      }
+
+      commands.push(command.data.toJSON());
+      console.log(`✅ Coletado: /${command.data.name} (${path.relative(__dirname, fullPath)})`);
+    } catch (err) {
+      console.error(`❌ Erro ao importar ${fullPath}:`, err);
+    }
+  }
+}
 
 (async () => {
   try {
     console.log('🚀 Iniciando registro de comandos...');
+    console.log('📌 CLIENT_ID:', CLIENT_ID);
+    console.log('📌 GUILD_ID :', GUILD_ID);
+    console.log('📌 commandsRoot:', commandsRoot);
 
-    if (!process.env.DISCORD_TOKEN) throw new Error('DISCORD_TOKEN não encontrado no .env');
-    if (!process.env.CLIENT_ID) throw new Error('CLIENT_ID não encontrado no .env');
-    if (!process.env.GUILD_ID) throw new Error('GUILD_ID não encontrado no .env');
-
-    const folders = fs.readdirSync(commandsPath);
-    console.log('📂 Pastas encontradas:', folders);
-
-    for (const folder of folders) {
-      const folderPath = path.join(commandsPath, folder);
-      if (!fs.statSync(folderPath).isDirectory()) continue;
-
-      const commandFiles = fs.readdirSync(folderPath).filter(f => f.endsWith('.js'));
-      console.log(`📁 ${folder}:`, commandFiles);
-
-      for (const file of commandFiles) {
-        const filePath = path.join(folderPath, file);
-        const command = require(filePath);
-
-        if (command.data && command.execute) {
-          commands.push(command.data.toJSON());
-        } else {
-          console.warn(`⚠️ Comando inválido (sem data/execute): ${filePath}`);
-        }
-      }
+    if (!fs.existsSync(commandsRoot)) {
+      throw new Error(`Pasta commands não encontrada em: ${commandsRoot}`);
     }
 
-    console.log('🧠 Comandos coletados:', commands.map(c => c.name));
+    collectCommands(commandsRoot);
 
-    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+    console.log(`🧠 Total coletado: ${commands.length}`);
+    console.log('🧾 Nomes:', commands.map(c => c.name).join(', '));
 
-    console.log(`🔄 Registrando ${commands.length} comandos na guild ${process.env.GUILD_ID}...`);
+    const rest = new REST({ version: '10' }).setToken(TOKEN);
 
-    await rest.put(
-      Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
+    // (Opcional) limpar antes: rode "node deploy-commands.js --clear"
+    if (process.argv.includes('--clear')) {
+      console.log('🧹 Limpando comandos da guild...');
+      await rest.put(
+        Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
+        { body: [] }
+      );
+      console.log('✅ Guild limpa.');
+    }
+
+    console.log('🔄 Registrando comandos na guild...');
+    const data = await rest.put(
+      Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
       { body: commands }
     );
 
-    console.log('✅ Comandos registrados com sucesso!');
+    console.log(`✅ Sucesso! Registrados na guild: ${data.length}`);
+    console.log('📌 Confirmados pelo Discord:', data.map(c => c.name).join(', '));
   } catch (error) {
     console.error('❌ Erro ao registrar comandos:');
     console.error(error);
+    process.exit(1);
   }
 })();
