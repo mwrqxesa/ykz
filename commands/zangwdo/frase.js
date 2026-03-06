@@ -66,7 +66,7 @@ Regras:
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('frase-zangwdo')
-    .setDescription('Receba uma frase aleatória criada pela IA'),
+    .setDescription('Receba uma frase aleatória criada por Zangwdo'),
 
   async execute(interaction) {
 
