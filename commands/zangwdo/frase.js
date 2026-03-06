@@ -1,89 +1,63 @@
 const { SlashCommandBuilder } = require('discord.js');
 const OpenAI = require('openai');
 
-const ai = process.env.OPENAI_API_KEY
-  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  : null;
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
-// fallback se IA não estiver configurada ou der erro
-const frasesFallback = [
-  'A calma é só um intervalo técnico entre surtos organizados.',
-  'Nem todo caos é problema. Às vezes é assinatura.',
-  'Hoje eu escolhi paz. A paz escolheu outra pessoa.',
-  'Energia baixa? Ative o modo Zangwdo.',
-  'Se deu errado, pelo menos ficou memorável.',
-  'Disciplina e caos podem dividir o mesmo quarto.',
+const fallback = [
+  'Às vezes o silêncio ensina mais que mil argumentos.',
+  'Disciplina é continuar mesmo quando a motivação saiu da call.',
+  'Nem todo caos é erro; às vezes é só crescimento acontecendo.',
+  'Crescer também é aprender a não reagir a tudo.',
+  'Algumas batalhas se vencem simplesmente ficando em pé.'
 ];
 
-const temas = [
-  { label: 'Mush', hints: 'MushMC, lobby, rank, build, clã, call, treta, evolução' },
-  { label: 'Minecraft', hints: 'Nether, portal, mineração, creeper, construção, sobrevivência, redstone' },
-  { label: 'Jogos', hints: 'grind, foco, tilt, vitória, derrota, treino, constância, evolução' },
-  { label: 'Discord/Call', hints: 'call, madrugada, amizade, silêncio, presença, resenha' },
-  { label: 'Zangwdo', hints: 'caos, disciplina, ironia leve, respeito, presença, lenda' },
-];
+const recent = [];
 
-function pickTema() {
-  return temas[Math.floor(Math.random() * temas.length)];
+function remember(p) {
+  recent.push(p);
+  if (recent.length > 25) recent.shift();
 }
 
-// anti-repetição (enquanto o bot estiver ligado)
-const lastPhrases = [];
-const MAX_LAST = 30;
-
-function remember(phrase) {
-  lastPhrases.push(phrase);
-  while (lastPhrases.length > MAX_LAST) lastPhrases.shift();
-}
-function wasRecentlyUsed(phrase) {
-  return lastPhrases.includes(phrase);
+function used(p) {
+  return recent.includes(p);
 }
 
-async function gerarFraseIA() {
-  if (!ai) return null;
+async function gerarFrase() {
 
-  const tema = pickTema();
+  const prompt = `
+Você é Zangwdo.
 
-  const system = `
-Você é "Zangwdo": cria frases curtas, reflexivas, com humor sutil gamer.
+Crie UMA frase reflexiva curta.
+
 Regras:
-- Gere APENAS 1 frase (uma linha).
-- 10 a 20 palavras.
-- Português do Brasil.
-- Sem palavrão pesado, sem hate, sem política.
-- Não use aspas.
-- Deve soar original a cada execução.
-`.trim();
+- apenas 1 frase
+- 8 a 20 palavras
+- português do Brasil
+- escolha sozinho o tema
+- pode ter vibe gamer, amizade, disciplina, caos ou maturidade
+- não use aspas
+- não explique
+`;
 
-  const user = `
-Crie uma frase reflexiva com o tema ${tema.label}.
-Use referências sutis de: ${tema.hints}.
-Misture caos + disciplina + maturidade + vibe gamer.
-`.trim();
+  for (let i = 0; i < 3; i++) {
 
-  // tenta até 3 vezes pra evitar repetir
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const res = await ai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user }
-      ],
-      temperature: 1.15,
-      max_tokens: 60,
+    const res = await openai.responses.create({
+      model: "gpt-4o-mini",
+      input: prompt
     });
 
-    const text = (res.choices?.[0]?.message?.content || '').trim();
-    if (!text) continue;
+    const frase = res.output_text
+      ?.trim()
+      ?.split("\n")[0]
+      ?.replace(/["']/g, "");
 
-    // garante 1 linha
-    const frase = text.split('\n').map(s => s.trim()).filter(Boolean)[0];
     if (!frase) continue;
+    if (used(frase)) continue;
 
-    if (!wasRecentlyUsed(frase)) {
-      remember(frase);
-      return frase;
-    }
+    remember(frase);
+    return frase;
   }
 
   return null;
@@ -92,27 +66,30 @@ Misture caos + disciplina + maturidade + vibe gamer.
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('frase-zangwdo')
-    .setDescription('Receba uma frase reflexiva aleatória do Zangwdo (IA).'),
+    .setDescription('Receba uma frase aleatória criada pela IA'),
 
   async execute(interaction) {
-    // IA pode demorar; evita "This interaction failed"
+
     await interaction.deferReply();
 
     try {
-      const fraseIA = await gerarFraseIA();
 
-      if (fraseIA) {
-        return interaction.editReply(`✨ **Frase do Zangwdo:** ${fraseIA}`);
+      const frase = await gerarFrase();
+
+      if (frase) {
+        return interaction.editReply(`✨ **Frase do Zangwdo:** ${frase}`);
       }
 
-      // fallback
-      const frase = frasesFallback[Math.floor(Math.random() * frasesFallback.length)];
-      return interaction.editReply(`✨ **Frase do Zangwdo:** ${frase}`);
-    } catch (err) {
-      console.error('Erro no frase-zangwdo (IA):', err);
+      const f = fallback[Math.floor(Math.random()*fallback.length)];
+      return interaction.editReply(`✨ **Frase do Zangwdo:** ${f}`);
 
-      const frase = frasesFallback[Math.floor(Math.random() * frasesFallback.length)];
-      return interaction.editReply(`✨ **Frase do Zangwdo:** ${frase}`);
+    } catch (err) {
+
+      console.error(err);
+
+      const f = fallback[Math.floor(Math.random()*fallback.length)];
+      return interaction.editReply(`✨ **Frase do Zangwdo:** ${f}`);
+
     }
   }
 };
