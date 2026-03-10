@@ -30,6 +30,9 @@ const GUILD_ID = process.env.GUILD_ID;
 const VOICE_GUILD_ID = process.env.VOICE_GUILD_ID;
 const VOICE_CHANNEL_ID = process.env.VOICE_CHANNEL_ID;
 
+let reconnectTimeout = null;
+let isConnectingVoice = false;
+
 if (!TOKEN) {
   console.error('❌ Token não encontrado. Defina DISCORD_TOKEN (ou BOT_TOKEN) nas Variables do Railway.');
   process.exit(1);
@@ -50,10 +53,24 @@ const client = new Client({
 
 client.commands = new Collection();
 
-/**
- * Carrega comandos recursivamente dentro de /commands
- * Espera export: { data: SlashCommandBuilder, execute: Function }
- */
+function clearReconnectTimer() {
+  if (reconnectTimeout) {
+    clearTimeout(reconnectTimeout);
+    reconnectTimeout = null;
+  }
+}
+
+function scheduleReconnect(delay = 5000, reason = 'sem motivo informado') {
+  if (reconnectTimeout) return;
+
+  console.log(`🔁 Agendando reconexão em ${delay}ms | motivo: ${reason}`);
+
+  reconnectTimeout = setTimeout(async () => {
+    reconnectTimeout = null;
+    await connectToFixedVoiceChannel(reason);
+  }, delay);
+}
+
 function loadCommandsRecursively(dirPath) {
   const entries = fs.readdirSync(dirPath, { withFileTypes: true });
 
@@ -90,16 +107,10 @@ function loadCommandsRecursively(dirPath) {
   }
 }
 
-/**
- * Coleta commands JSON para registrar no Discord
- */
 function buildCommandsJSON() {
   return [...client.commands.values()].map((cmd) => cmd.data.toJSON());
 }
 
-/**
- * Registra slash na guild
- */
 async function registerSlashCommands() {
   if (!CLIENT_ID || !GUILD_ID) return;
 
@@ -117,25 +128,75 @@ async function registerSlashCommands() {
   console.log('📌 Confirmados:', data.map((c) => c.name).join(', '));
 }
 
-/**
- * Conecta o bot na call fixa
- */
-async function connectToFixedVoiceChannel() {
+function attachConnectionListeners(connection) {
+  connection.on('stateChange', (oldState, newState) => {
+    console.log(`🎤 Voice state: ${oldState.status} -> ${newState.status}`);
+  });
+
+  connection.on(VoiceConnectionStatus.Ready, () => {
+    console.log('✅ VoiceConnection entrou em READY.');
+    clearReconnectTimer();
+  });
+
+  connection.on(VoiceConnectionStatus.Disconnected, async () => {
+    console.warn('⚠️ VoiceConnection entrou em DISCONNECTED.');
+
+    try {
+      await Promise.race([
+        entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+      ]);
+
+      console.log('🔄 A conexão está tentando se recuperar sozinha.');
+    } catch {
+      console.warn('❌ Desconexão real detectada. Destruindo conexão e reconectando...');
+      try {
+        connection.destroy();
+      } catch (err) {
+        console.error('❌ Erro ao destruir conexão antiga:', err);
+      }
+
+      scheduleReconnect(3000, 'desconexão real');
+    }
+  });
+
+  connection.on(VoiceConnectionStatus.Destroyed, () => {
+    console.warn('⚠️ VoiceConnection foi destruída.');
+    scheduleReconnect(3000, 'connection destroyed');
+  });
+}
+
+async function connectToFixedVoiceChannel(reason = 'inicialização') {
+  if (isConnectingVoice) {
+    console.log(`⏳ Já existe tentativa de conexão em andamento. Motivo novo: ${reason}`);
+    return;
+  }
+
+  isConnectingVoice = true;
+
   try {
     if (!VOICE_GUILD_ID || !VOICE_CHANNEL_ID) {
-      console.warn('⚠️ VOICE_GUILD_ID ou VOICE_CHANNEL_ID não definidos. Pulando conexão de voz.');
+      console.warn('⚠️ VOICE_GUILD_ID ou VOICE_CHANNEL_ID não definidos.');
+      return;
+    }
+
+    if (!client.isReady()) {
+      console.warn('⚠️ Cliente ainda não está pronto para conectar na call.');
+      scheduleReconnect(5000, 'client ainda não pronto');
       return;
     }
 
     const guild = await client.guilds.fetch(VOICE_GUILD_ID).catch(() => null);
     if (!guild) {
       console.error('❌ Guild da call não encontrada.');
+      scheduleReconnect(8000, 'guild não encontrada');
       return;
     }
 
     const channel = await guild.channels.fetch(VOICE_CHANNEL_ID).catch(() => null);
     if (!channel) {
       console.error('❌ Canal de voz não encontrado.');
+      scheduleReconnect(8000, 'canal não encontrado');
       return;
     }
 
@@ -147,18 +208,43 @@ async function connectToFixedVoiceChannel() {
       return;
     }
 
+    const me = guild.members.me ?? await guild.members.fetchMe().catch(() => null);
+    if (!me) {
+      console.error('❌ Não consegui obter o membro do bot na guild.');
+      scheduleReconnect(8000, 'guild.members.me indisponível');
+      return;
+    }
+
+    const permissions = channel.permissionsFor(me);
+    if (!permissions?.has('ViewChannel') || !permissions?.has('Connect')) {
+      console.error('❌ O bot não tem permissão para ver/conectar nesse canal.');
+      return;
+    }
+
     const existing = getVoiceConnection(guild.id);
-    if (existing) {
-      if (existing.joinConfig.channelId === channel.id) {
-        console.log('✅ Bot já está na call correta.');
+
+    if (existing && existing.state.status !== VoiceConnectionStatus.Destroyed) {
+      const sameChannel = existing.joinConfig.channelId === channel.id;
+      const inGoodState =
+        existing.state.status === VoiceConnectionStatus.Ready ||
+        existing.state.status === VoiceConnectionStatus.Connecting ||
+        existing.state.status === VoiceConnectionStatus.Signalling;
+
+      if (sameChannel && inGoodState) {
+        console.log(`✅ Conexão já existe na call correta. Estado: ${existing.state.status}`);
+        clearReconnectTimer();
         return;
       }
 
-      console.log('🔁 Bot estava em outra call. Reconectando...');
-      existing.destroy();
+      console.log(`🔁 Limpando conexão antiga. Estado atual: ${existing.state.status}`);
+      try {
+        existing.destroy();
+      } catch (err) {
+        console.error('❌ Erro ao destruir conexão existente:', err);
+      }
     }
 
-    console.log(`🔊 Entrando na call fixa: ${channel.name} (${channel.id})`);
+    console.log(`🔊 Conectando na call fixa: ${channel.name} (${channel.id}) | motivo: ${reason}`);
 
     const connection = joinVoiceChannel({
       channelId: channel.id,
@@ -168,31 +254,19 @@ async function connectToFixedVoiceChannel() {
       selfMute: false,
     });
 
-    connection.on('stateChange', async (_, newState) => {
-      console.log(`🎤 Voice state: ${newState.status}`);
-
-      if (newState.status === VoiceConnectionStatus.Disconnected) {
-        console.warn('⚠️ Bot desconectado da call. Tentando voltar...');
-        setTimeout(() => {
-          connectToFixedVoiceChannel().catch(console.error);
-        }, 5000);
-      }
-    });
+    attachConnectionListeners(connection);
 
     await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
     console.log('✅ Bot conectado na call fixa com sucesso.');
+    clearReconnectTimer();
   } catch (err) {
     console.error('❌ Erro ao conectar na call fixa:', err);
-
-    setTimeout(() => {
-      connectToFixedVoiceChannel().catch(console.error);
-    }, 10000);
+    scheduleReconnect(5000, 'erro no connectToFixedVoiceChannel');
+  } finally {
+    isConnectingVoice = false;
   }
 }
 
-/**
- * Boot: load commands
- */
 (function bootstrap() {
   try {
     const commandsRoot = path.join(__dirname, 'commands');
@@ -213,9 +287,6 @@ async function connectToFixedVoiceChannel() {
   }
 })();
 
-/**
- * Ready
- */
 client.once(Events.ClientReady, async (c) => {
   console.log(`✅ Zangwdo online como ${c.user.tag}`);
 
@@ -230,16 +301,9 @@ client.once(Events.ClientReady, async (c) => {
     console.error('❌ Falha ao registrar slash commands:', e);
   }
 
-  try {
-    await connectToFixedVoiceChannel();
-  } catch (e) {
-    console.error('❌ Falha ao conectar na call fixa:', e);
-  }
+  await connectToFixedVoiceChannel('client ready');
 });
 
-/**
- * Se moverem, expulsarem ou desconectarem o bot da call, ele volta
- */
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   try {
     if (!client.user) return;
@@ -247,20 +311,26 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
     const botId = client.user.id;
     if (oldState.id !== botId && newState.id !== botId) return;
 
+    console.log(`🤖 Bot mudou de voz: ${oldState.channelId || 'null'} -> ${newState.channelId || 'null'}`);
+
     if (newState.channelId !== VOICE_CHANNEL_ID) {
-      console.warn('⚠️ Tiraram o bot da call fixa. Voltando...');
-      setTimeout(() => {
-        connectToFixedVoiceChannel().catch(console.error);
-      }, 3000);
+      console.warn('⚠️ Bot saiu da call fixa. Tentando voltar...');
+      scheduleReconnect(2000, 'voice state fora da call fixa');
+    } else {
+      clearReconnectTimer();
     }
   } catch (err) {
     console.error('❌ Erro no VoiceStateUpdate:', err);
   }
 });
 
-/**
- * Interactions (Slash Commands)
- */
+client.on(Events.GuildCreate, async (guild) => {
+  if (guild.id === VOICE_GUILD_ID) {
+    console.log('📥 Bot entrou/confirmou presença na guild da call fixa.');
+    scheduleReconnect(2000, 'guild create');
+  }
+});
+
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (!interaction.isChatInputCommand()) return;
@@ -296,15 +366,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 });
 
-/**
- * Erros gerais
- */
 process.on('unhandledRejection', (reason) => console.error('❌ Unhandled Rejection:', reason));
 process.on('uncaughtException', (error) => console.error('❌ Uncaught Exception:', error));
 
-/**
- * Login
- */
 client.login(TOKEN)
   .then(() => console.log('🔐 Login enviado ao Discord...'))
   .catch((err) => {
