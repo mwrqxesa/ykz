@@ -11,7 +11,15 @@ const {
   ActivityType,
   REST,
   Routes,
+  ChannelType,
 } = require('discord.js');
+
+const {
+  joinVoiceChannel,
+  getVoiceConnection,
+  VoiceConnectionStatus,
+  entersState,
+} = require('@discordjs/voice');
 
 console.log('🚀 Iniciando Zangwdo...');
 
@@ -19,19 +27,24 @@ const TOKEN = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 
+const VOICE_GUILD_ID = process.env.VOICE_GUILD_ID;
+const VOICE_CHANNEL_ID = process.env.VOICE_CHANNEL_ID;
+
 if (!TOKEN) {
   console.error('❌ Token não encontrado. Defina DISCORD_TOKEN (ou BOT_TOKEN) nas Variables do Railway.');
   process.exit(1);
 }
 
-// Para registrar slash automaticamente (recomendado no Railway)
 if (!CLIENT_ID || !GUILD_ID) {
   console.warn('⚠️ CLIENT_ID ou GUILD_ID não definidos. Slash NÃO será registrado automaticamente.');
   console.warn('⚠️ Defina CLIENT_ID e GUILD_ID nas Variables do Railway para aparecer no "/".');
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildVoiceStates,
+  ],
   partials: [Partials.Channel],
 });
 
@@ -85,7 +98,7 @@ function buildCommandsJSON() {
 }
 
 /**
- * Registra slash na guild (aparece instantâneo)
+ * Registra slash na guild
  */
 async function registerSlashCommands() {
   if (!CLIENT_ID || !GUILD_ID) return;
@@ -105,6 +118,79 @@ async function registerSlashCommands() {
 }
 
 /**
+ * Conecta o bot na call fixa
+ */
+async function connectToFixedVoiceChannel() {
+  try {
+    if (!VOICE_GUILD_ID || !VOICE_CHANNEL_ID) {
+      console.warn('⚠️ VOICE_GUILD_ID ou VOICE_CHANNEL_ID não definidos. Pulando conexão de voz.');
+      return;
+    }
+
+    const guild = await client.guilds.fetch(VOICE_GUILD_ID).catch(() => null);
+    if (!guild) {
+      console.error('❌ Guild da call não encontrada.');
+      return;
+    }
+
+    const channel = await guild.channels.fetch(VOICE_CHANNEL_ID).catch(() => null);
+    if (!channel) {
+      console.error('❌ Canal de voz não encontrado.');
+      return;
+    }
+
+    if (
+      channel.type !== ChannelType.GuildVoice &&
+      channel.type !== ChannelType.GuildStageVoice
+    ) {
+      console.error('❌ O VOICE_CHANNEL_ID informado não é um canal de voz.');
+      return;
+    }
+
+    const existing = getVoiceConnection(guild.id);
+    if (existing) {
+      if (existing.joinConfig.channelId === channel.id) {
+        console.log('✅ Bot já está na call correta.');
+        return;
+      }
+
+      console.log('🔁 Bot estava em outra call. Reconectando...');
+      existing.destroy();
+    }
+
+    console.log(`🔊 Entrando na call fixa: ${channel.name} (${channel.id})`);
+
+    const connection = joinVoiceChannel({
+      channelId: channel.id,
+      guildId: guild.id,
+      adapterCreator: guild.voiceAdapterCreator,
+      selfDeaf: true,
+      selfMute: false,
+    });
+
+    connection.on('stateChange', async (_, newState) => {
+      console.log(`🎤 Voice state: ${newState.status}`);
+
+      if (newState.status === VoiceConnectionStatus.Disconnected) {
+        console.warn('⚠️ Bot desconectado da call. Tentando voltar...');
+        setTimeout(() => {
+          connectToFixedVoiceChannel().catch(console.error);
+        }, 5000);
+      }
+    });
+
+    await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+    console.log('✅ Bot conectado na call fixa com sucesso.');
+  } catch (err) {
+    console.error('❌ Erro ao conectar na call fixa:', err);
+
+    setTimeout(() => {
+      connectToFixedVoiceChannel().catch(console.error);
+    }, 10000);
+  }
+}
+
+/**
  * Boot: load commands
  */
 (function bootstrap() {
@@ -119,7 +205,9 @@ async function registerSlashCommands() {
     loadCommandsRecursively(commandsRoot);
 
     console.log(`🧠 Total de comandos carregados: ${client.commands.size}`);
-    if (client.commands.size > 0) console.log('🧾 Lista:', [...client.commands.keys()].join(', '));
+    if (client.commands.size > 0) {
+      console.log('🧾 Lista:', [...client.commands.keys()].join(', '));
+    }
   } catch (err) {
     console.error('❌ Erro geral ao carregar comandos:', err);
   }
@@ -136,17 +224,42 @@ client.once(Events.ClientReady, async (c) => {
     status: 'online',
   });
 
-  // 🔥 Auto-registro de slash no Railway
   try {
     await registerSlashCommands();
   } catch (e) {
     console.error('❌ Falha ao registrar slash commands:', e);
   }
+
+  try {
+    await connectToFixedVoiceChannel();
+  } catch (e) {
+    console.error('❌ Falha ao conectar na call fixa:', e);
+  }
+});
+
+/**
+ * Se moverem, expulsarem ou desconectarem o bot da call, ele volta
+ */
+client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
+  try {
+    if (!client.user) return;
+
+    const botId = client.user.id;
+    if (oldState.id !== botId && newState.id !== botId) return;
+
+    if (newState.channelId !== VOICE_CHANNEL_ID) {
+      console.warn('⚠️ Tiraram o bot da call fixa. Voltando...');
+      setTimeout(() => {
+        connectToFixedVoiceChannel().catch(console.error);
+      }, 3000);
+    }
+  } catch (err) {
+    console.error('❌ Erro no VoiceStateUpdate:', err);
+  }
 });
 
 /**
  * Interactions (Slash Commands)
- * (sem auto-defer aqui, para não quebrar comandos que já dão deferReply)
  */
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
@@ -159,7 +272,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (!command) {
       console.warn(`⚠️ Comando não encontrado no runtime: /${interaction.commandName}`);
       if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: '⚠️ Esse comando não foi encontrado no bot (runtime).', ephemeral: true });
+        await interaction.reply({
+          content: '⚠️ Esse comando não foi encontrado no bot (runtime).',
+          ephemeral: true,
+        });
       }
       return;
     }
