@@ -61,17 +61,6 @@ function clearReconnectTimer() {
   }
 }
 
-function scheduleReconnect(delay = 5000, reason = 'motivo não informado') {
-  if (reconnectTimeout) return;
-
-  console.log(`🔁 Reconexão agendada em ${delay}ms | motivo: ${reason}`);
-
-  reconnectTimeout = setTimeout(async () => {
-    reconnectTimeout = null;
-    await forceReconnectToFixedChannel(reason);
-  }, delay);
-}
-
 function loadCommandsRecursively(dirPath) {
   const entries = fs.readdirSync(dirPath, { withFileTypes: true });
 
@@ -180,6 +169,37 @@ function destroyExistingConnection(guildId, label = 'sem label') {
   }
 }
 
+async function forceReconnectToFixedChannel(reason = 'forçado') {
+  try {
+    const guild = await client.guilds.fetch(VOICE_GUILD_ID).catch(() => null);
+    if (guild) {
+      destroyExistingConnection(guild.id, `force reconnect: ${reason}`);
+    }
+  } catch (err) {
+    console.error('❌ Erro ao forçar destruição da conexão:', err);
+  }
+
+  isConnectingVoice = false;
+  await connectToFixedVoiceChannel(reason);
+}
+
+function scheduleReconnect(delay = 5000, reason = 'motivo não informado', force = false) {
+  if (reconnectTimeout) return;
+
+  console.log(`🔁 Reconexão agendada em ${delay}ms | motivo: ${reason} | force=${force}`);
+
+  reconnectTimeout = setTimeout(async () => {
+    reconnectTimeout = null;
+
+    if (force) {
+      await forceReconnectToFixedChannel(reason);
+      return;
+    }
+
+    await connectToFixedVoiceChannel(reason);
+  }, delay);
+}
+
 function attachConnectionListeners(connection, guildId, channelId, attemptId) {
   connection.on('stateChange', (oldState, newState) => {
     console.log(`🎤 Voice state [tentativa ${attemptId}]: ${oldState.status} -> ${newState.status}`);
@@ -188,7 +208,8 @@ function attachConnectionListeners(connection, guildId, channelId, attemptId) {
   connection.on('error', (error) => {
     console.error(`❌ Voice connection error [tentativa ${attemptId}]:`, error);
     destroyExistingConnection(guildId, 'voice connection error');
-    scheduleReconnect(3000, 'voice connection error');
+    isConnectingVoice = false;
+    scheduleReconnect(3000, 'voice connection error', true);
   });
 
   connection.on(VoiceConnectionStatus.Ready, () => {
@@ -208,7 +229,8 @@ function attachConnectionListeners(connection, guildId, channelId, attemptId) {
       console.log('🔄 A lib tentou recuperar a conexão sozinha.');
     } catch {
       destroyExistingConnection(guildId, 'disconnected sem recuperação');
-      scheduleReconnect(3000, 'disconnected sem recuperação');
+      isConnectingVoice = false;
+      scheduleReconnect(2500, 'disconnected sem recuperação', true);
     }
   });
 
@@ -226,7 +248,8 @@ function attachConnectionListeners(connection, guildId, channelId, attemptId) {
     if (stuck) {
       console.warn(`⚠️ Conexão travada em ${current.state.status}. Forçando recriação...`);
       destroyExistingConnection(guildId, 'travada em signalling/connecting');
-      scheduleReconnect(2500, 'travou no boot da voz');
+      isConnectingVoice = false;
+      scheduleReconnect(2500, 'travou no boot da voz', true);
     }
   }, 15000);
 
@@ -251,13 +274,13 @@ async function connectToFixedVoiceChannel(reason = 'inicialização') {
     }
 
     if (!client.isReady()) {
-      scheduleReconnect(5000, 'client ainda não pronto');
+      scheduleReconnect(5000, 'client ainda não pronto', true);
       return;
     }
 
     const { guild, channel } = await getTargetGuildAndChannel();
     if (!guild || !channel) {
-      scheduleReconnect(7000, 'guild/canal indisponível');
+      scheduleReconnect(7000, 'guild/canal indisponível', true);
       return;
     }
 
@@ -267,17 +290,22 @@ async function connectToFixedVoiceChannel(reason = 'inicialização') {
       return;
     }
 
+    const me = guild.members.me ?? await guild.members.fetchMe().catch(() => null);
+    const currentChannelId = me?.voice?.channelId ?? null;
     const existing = getVoiceConnection(guild.id);
 
+    if (
+      existing &&
+      currentChannelId === channel.id &&
+      existing.joinConfig.channelId === channel.id &&
+      existing.state.status === VoiceConnectionStatus.Ready
+    ) {
+      console.log('✅ Bot já está pronto na call correta.');
+      clearReconnectTimer();
+      return;
+    }
+
     if (existing) {
-      const sameChannel = existing.joinConfig.channelId === channel.id;
-
-      if (sameChannel && existing.state.status === VoiceConnectionStatus.Ready) {
-        console.log('✅ Bot já está pronto na call correta.');
-        clearReconnectTimer();
-        return;
-      }
-
       destroyExistingConnection(guild.id, `recriar conexão | estado antigo: ${existing.state.status}`);
     }
 
@@ -300,27 +328,16 @@ async function connectToFixedVoiceChannel(reason = 'inicialização') {
     } catch (err) {
       console.error(`❌ Não chegou em READY [tentativa ${attemptId}]:`, err);
       destroyExistingConnection(guild.id, 'timeout aguardando ready');
-      scheduleReconnect(3000, 'timeout aguardando ready');
+      isConnectingVoice = false;
+      scheduleReconnect(3000, 'timeout aguardando ready', true);
+      return;
     }
   } catch (err) {
     console.error('❌ Erro ao conectar na call fixa:', err);
-    scheduleReconnect(5000, 'erro geral ao conectar');
+    scheduleReconnect(5000, 'erro geral ao conectar', true);
   } finally {
     isConnectingVoice = false;
   }
-}
-
-async function forceReconnectToFixedChannel(reason = 'forçado') {
-  try {
-    const guild = await client.guilds.fetch(VOICE_GUILD_ID).catch(() => null);
-    if (guild) {
-      destroyExistingConnection(guild.id, `force reconnect: ${reason}`);
-    }
-  } catch (err) {
-    console.error('❌ Erro ao forçar destruição da conexão:', err);
-  }
-
-  await connectToFixedVoiceChannel(reason);
 }
 
 function startVoiceWatchdog() {
@@ -342,25 +359,36 @@ function startVoiceWatchdog() {
 
       if (currentChannelId !== VOICE_CHANNEL_ID) {
         console.warn(`⚠️ Watchdog: bot fora da call fixa. Atual=${currentChannelId} Esperado=${VOICE_CHANNEL_ID}`);
-        scheduleReconnect(1000, 'watchdog detectou bot fora da call');
+        scheduleReconnect(1000, 'watchdog detectou bot fora da call', true);
         return;
       }
 
       if (!connection) {
         console.warn('⚠️ Watchdog: sem VoiceConnection ativa.');
-        scheduleReconnect(1000, 'watchdog sem voice connection');
+        scheduleReconnect(1000, 'watchdog sem voice connection', true);
         return;
       }
 
-      if (connection.state.status !== VoiceConnectionStatus.Ready) {
-        console.warn(`⚠️ Watchdog: conexão não está READY (${connection.state.status}).`);
+      if (connection.joinConfig.channelId !== VOICE_CHANNEL_ID) {
+        console.warn(`⚠️ Watchdog: VoiceConnection aponta para outro canal (${connection.joinConfig.channelId}).`);
+        destroyExistingConnection(guild.id, 'watchdog canal incorreto');
+        scheduleReconnect(1000, 'watchdog canal incorreto', true);
+        return;
+      }
+
+      if (
+        connection.state.status !== VoiceConnectionStatus.Ready &&
+        connection.state.status !== VoiceConnectionStatus.Connecting &&
+        connection.state.status !== VoiceConnectionStatus.Signalling
+      ) {
+        console.warn(`⚠️ Watchdog: conexão em estado inválido (${connection.state.status}).`);
         destroyExistingConnection(guild.id, `watchdog estado ${connection.state.status}`);
-        scheduleReconnect(1500, 'watchdog conexão não ready');
+        scheduleReconnect(1500, 'watchdog conexão inválida', true);
       }
     } catch (err) {
       console.error('❌ Erro no watchdog de voz:', err);
     }
-  }, 20000);
+  }, 10000);
 }
 
 (function bootstrap() {
@@ -412,7 +440,7 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
 
     if (newState.channelId !== VOICE_CHANNEL_ID) {
       console.warn('⚠️ Bot saiu da call fixa. Tentando voltar...');
-      scheduleReconnect(1500, 'voice state fora da call fixa');
+      scheduleReconnect(1000, 'voice state fora da call fixa', true);
     } else {
       clearReconnectTimer();
     }
